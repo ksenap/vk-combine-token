@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ключ для комбайна</title>
+<!--
+  Страница мини-приложения ВК: выдаёт ключ доступа пользователя с правом photos.
+
+  Зачем: сервис авторизации VK ID право photos не даёт (проверено вживую, docs/vk/API_NOTES.md),
+  а VKWebAppGetAuthToken его поддерживает. Ключ живёт до expires и без обновления, поэтому схема такая:
+  открыть страницу внутри ВК -> «Получить ключ» -> «Скопировать» -> в комбайне  vk token  -> отложить посты с фото.
+
+  Ключ никуда не отправляется: он только показывается и кладётся в буфер обмена.
+-->
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#111; --muted:#71757a; --line:#e3e5e8; --accent:#07f; --ok:#4bb34b; --err:#e64646; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#19191a; --fg:#e1e3e6; --muted:#909499; --line:#2f3033; } }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px 16px; background:var(--bg); color:var(--fg);
+         font:16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 24px; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 12px 18px; cursor: pointer;
+           background: var(--accent); color: #fff; }
+  button.second { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  textarea { width: 100%; min-height: 108px; margin-top: 16px; padding: 12px; border-radius: 10px;
+             border: 1px solid var(--line); background: transparent; color: var(--fg);
+             font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
+  .note { margin-top: 16px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); }
+  .note.ok  { border-color: var(--ok);  }
+  .note.err { border-color: var(--err); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 12px 0 0; font-size: 14px; }
+  dt { color: var(--muted); }
+  code { font-family: ui-monospace, Consolas, monospace; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ключ для комбайна</h1>
+  <p class="sub">Нужен, чтобы ставить посты с фотографиями в отложку. Действует несколько часов, потом получите заново.</p>
+
+  <div class="row">
+    <button id="get">Получить ключ</button>
+    <button id="copy" class="second" hidden>Скопировать</button>
+  </div>
+
+  <div id="state" class="note" hidden></div>
+  <textarea id="out" readonly hidden spellcheck="false"></textarea>
+  <dl id="info" hidden>
+    <dt>Права</dt><dd id="scope">—</dd>
+    <dt>Действует до</dt><dd id="until">—</dd>
+  </dl>
+
+  <div class="note" style="margin-top:24px">
+    Дальше на компьютере: скопируйте ключ кнопкой выше и выполните в комбайне<br>
+    <code>python -m combine.cli vk token</code>
+  </div>
+</main>
+
+<script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+<script>
+  // id мини-приложения «Poster» (кабинет dev.vk.com). Права: фото на стену, публикация, список сообществ.
+  const APP_ID = 54795744;
+  const SCOPE = 'photos,wall,groups';
+
+  const $ = (id) => document.getElementById(id);
+  let payload = '';
+
+  function say(text, kind) {
+    const el = $('state');
+    el.hidden = false;
+    el.className = 'note' + (kind ? ' ' + kind : '');
+    el.textContent = text;
+  }
+
+  try { vkBridge.send('VKWebAppInit'); } catch (e) { /* вне ВК Bridge недоступен — скажем об этом при нажатии */ }
+
+  $('get').addEventListener('click', async () => {
+    $('get').disabled = true;
+    say('Спрашиваю разрешение…');
+    try {
+      const data = await vkBridge.send('VKWebAppGetAuthToken', { app_id: APP_ID, scope: SCOPE });
+      const granted = (data.scope || '').split(/[,\s]+/).filter(Boolean);
+      payload = JSON.stringify({ access_token: data.access_token, expires: data.expires || 0, scope: granted.join(' ') });
+      $('out').value = payload;
+      $('out').hidden = false;
+      $('copy').hidden = false;
+      $('info').hidden = false;
+      $('scope').textContent = granted.join(', ') || '—';
+      $('until').textContent = data.expires
+        ? new Date(data.expires * 1000).toLocaleString('ru-RU')
+        : 'без ограничения срока';
+      if (granted.includes('photos')) {
+        say('Ключ получен, право на фотографии есть.', 'ok');
+      } else {
+        say('Ключ получен, но права photos в нём нет — фото загрузить не выйдет.', 'err');
+      }
+    } catch (e) {
+      const msg = (e && e.error_data && (e.error_data.error_reason || e.error_data.error_msg)) || '';
+      say('Не получилось: ' + (msg || 'откройте страницу внутри ВКонтакте, как мини-приложение'), 'err');
+    } finally {
+      $('get').disabled = false;
+    }
+  });
+
+  $('copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(payload);
+      say('Скопировано. Теперь на компьютере: python -m combine.cli vk token', 'ok');
+    } catch (e) {
+      $('out').select();
+      say('Скопируйте выделенный текст вручную (Ctrl+C).');
+    }
+  });
+</script>
+</body>
+</html>
